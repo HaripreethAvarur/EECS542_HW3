@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+import argparse
+from pathlib import Path
+
+import numpy as np
+import torch
+import cv2
+
+from hmr2.models.smpl_wrapper import SMPL as SMPL_TORCH
+from hmr2.utils.renderer import Renderer
+from hmr2.utils.geometry import aa_to_rotmat
+
+
+def _build_renderer_cfg(focal_length=5000.0, image_size=512):
+    class _Obj:
+        pass
+    cfg = _Obj()
+    cfg.EXTRA = _Obj()
+    cfg.MODEL = _Obj()
+    cfg.EXTRA.FOCAL_LENGTH = float(focal_length)
+    cfg.MODEL.IMAGE_SIZE = int(image_size)
+    cfg.MODEL.IMAGE_MEAN = [0.485, 0.456, 0.406]
+    cfg.MODEL.IMAGE_STD = [0.229, 0.224, 0.225]
+    return cfg
+
+
+def render_tpose(model_path, out_path, res=512):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    smpl = SMPL_TORCH(
+        model_path=str(model_path),
+        gender='NEUTRAL',
+        num_betas=10,
+        use_vanilla_joints=True,
+    ).to(device)
+
+    #########################################################
+    # TODO Task 2.2
+    # Experiment with different betas. A good range for beta
+    # can be in (-2, 2).
+    #########################################################
+    betas = torch.tensor([[2.0, -1.5, 1.0, 0.5, -0.8, 0.3, -0.5, 0.2, 0.0, 0.0]], device=device, dtype=torch.float32)   
+    #########################################################
+    
+    # Axis-angle representation
+    body_pose_aa = torch.zeros(1, 23, 3, device=device)
+
+    #########################################################
+    # TODO Task 2.3
+    # Change body_pose_aa here to make the body pose match the target.
+    #########################################################
+    # Your code here.
+    body_pose_aa[0, 16] = torch.tensor([0, 2, 0], device=device)
+    body_pose_aa[0, 18] = torch.tensor([0, 1, 0], device=device)
+    #########################################################
+
+    global_orient_aa = torch.tensor([[0.0, np.pi, 0.0]], device=device, dtype=torch.float32)
+    # Convert to rotation matrix
+    body_rotmat = aa_to_rotmat(body_pose_aa.view(-1, 3)).view(1, 23, 3, 3)
+    glob_rotmat = aa_to_rotmat(global_orient_aa.view(-1, 3)).view(1, 1, 3, 3)
+
+    # Construct SMPL output using betas and pose parameters
+    smpl_out = smpl(betas=betas, body_pose=body_rotmat, global_orient=glob_rotmat, pose2rot=False)
+    vertices = smpl_out.vertices[0].detach().cpu().numpy()
+    faces = smpl.faces
+
+    cfg = _build_renderer_cfg(image_size=res)
+    renderer = Renderer(cfg, faces=faces)
+
+    rgba = renderer.render_rgba(
+        vertices=vertices,
+        mesh_base_color=(1.0, 0.4, 0.7),  # pink (DO NOT CHANGE)
+        scene_bg_color=(1, 1, 1),         # white background
+        render_res=[res, res],
+        # Rotate around Z by 180° to make body upright
+        rot_axis=[0, 0, 1],
+        rot_angle=180,
+    )
+
+    rgb = (np.clip(rgba[:, :, :3], 0.0, 1.0) * 255).astype(np.uint8)
+    # cv2 expects BGR
+    cv2.imwrite(str(out_path), rgb[:, :, ::-1])
+    return out_path
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model_path', default='data/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl', help='Path to SMPL pkl model')
+    parser.add_argument('--out', default='results/smpl_tpose.png', help='Output image path')
+    parser.add_argument('--res', type=int, default=512, help='Render resolution (square)')
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    model_path = Path(args.model_path).resolve()
+    out_path = Path(args.out).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    out_img = render_tpose(model_path, out_path, args.res)
+    print(f"Saved T-pose render to: {out_img}")
+
+
+if __name__ == '__main__':
+    main()
+
+

@@ -1,0 +1,10 @@
+.idea
+*.egg-info
+*.pyc
+*.pkl
+*.tar.gz
+
+__pycache__/
+demo_out/
+results/
+data/
